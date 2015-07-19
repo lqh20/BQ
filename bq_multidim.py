@@ -201,3 +201,102 @@ def bayesian_quad_normal(f,n_dim, sample_size, mu, Sigma, verbose = True):
     # return mean estimate and standard deviation
     return integral_est, np.sqrt(variance)
 
+
+def bayesian_quad_normal_embedding(f,n_dim, sample_size, mu, Sigma, emb_dim = 2, A=None, verbose = True):
+    """
+    Implements BMC Bayesian Quadrature with embedding for a Gaussian base measure and RBF kernel.
+    
+    Args:
+        f (function): Function to be integrated
+        n_dim (int): dimension
+        sample_size (int): number of samples to use
+        mu (ndarray): mean vector of Gaussian to integrate against
+        Sigma (ndarray): covariance matrix of Gaussian to integrate against
+    
+    Kwargs:
+        verbose (bool): verbosity
+        A (ndarray): embedding to be used, defaults to random normal
+    
+    Returns:
+        integral estimate, standard deviation
+    """    
+    start = datetime.datetime.now()  
+    if verbose:
+        print start
+    kernel =GPy.kern.RBF(emb_dim,ARD=True)
+    if A is None:
+        A = np.random.normal(0,1,n_dim*emb_dim).reshape(emb_dim,n_dim)
+    print A
+    mu = np.atleast_1d(mu)
+    Sigma = np.atleast_2d(Sigma)
+    
+    
+    #generate sample points
+    if verbose:
+        print "sampling"
+        x_grid = np.atleast_2d(multivariate_normal.rvs(mean=mu, cov=Sigma, size=sample_size))
+    #calculate function values
+    f_obs = np.array(map(lambda x: f(*x),np.atleast_2d(x_grid)))
+       
+    #fit GP model
+    if verbose:
+        print "done",datetime.datetime.now(), datetime.datetime.now()-start
+        print "fitting model"
+    
+    x_grid_emb = np.dot(x_grid,A.transpose())
+    model = gp_reg.GPRegression(x_grid_emb,f_obs[:,None],kernel,normalizer=False)
+    model["Gaussian*."].constrain_bounded(0,1e-10)
+    model.optimize_restarts(verbose=verbose,optimizer="lbfgs",max_f_eval=1000)
+    if verbose:
+        print model
+        print model.kern[:]
+        print datetime.datetime.now(), datetime.datetime.now()-start
+        print "integrals estimate"
+    
+    # calculate determinants
+    DInv_vec = model.kern["lengthscale"]**(-2)
+    #print DInv_vec
+    ADInvA = np.dot(np.dot(A.transpose(),np.diag(DInv_vec)),A)
+    SigmaInv = LA.inv(Sigma)
+    ADInvA_SigmaInv = ADInvA + SigmaInv
+    #print DInv_SigmaInv
+    ADInvA_SigmaInv_Inv = LA.inv(ADInvA_SigmaInv)
+    #print DInv_SigmaInv_Inv
+    det_Sigma = LA.det(Sigma)
+    det_ADInvA_SigmaInv = LA.det(ADInvA_SigmaInv)
+    #print det_DInv_SigmaInv
+        
+    # set up functions that integrate kernel explicitly
+    def int_k_x(y):
+        y_prime = y-mu
+        ADInvA_y_prime = np.dot(ADInvA,y_prime)
+        temp = -0.5*np.einsum("i,i",ADInvA_y_prime,y_prime)+0.5*np.einsum("i,ij,j",ADInvA_y_prime,ADInvA_SigmaInv_Inv,ADInvA_y_prime)
+        return model.kern["variance"]*det_Sigma**(-0.5)*det_ADInvA_SigmaInv**(-0.5)*np.exp(temp)
+        
+    int_kxX= np.ravel(np.array(map(int_k_x,x_grid)))
+    #print int_kxX
+    print "Mean integral computed", datetime.datetime.now(), datetime.datetime.now()-start
+    print "Variance integral"
+            
+    def int_k_x_y():
+        return model.kern["variance"]*det_Sigma**(-0.5)*LA.det(SigmaInv+2*ADInvA)**(-0.5)
+    
+    int_kxx =  int_k_x_y()
+    #print int_kxx
+    #int_kxx_t, err = integrate.nquad(lambda *x: tmp_prod(x),ranges)
+    #print int_kxx,int_kxx_t
+    if verbose:
+        print "initial integrals computed", datetime.datetime.now(), datetime.datetime.now()-start
+        print "calculate estimate"
+    integral_est = np.dot(int_kxX,LA.solve(model.kern.K(x_grid_emb),f_obs))
+    if verbose:
+        print "estimate calculated", datetime.datetime.now(), datetime.datetime.now()-start
+        print "calculate variance"
+    variance = int_kxx-np.dot(int_kxX,LA.solve(model.kern.K(x_grid_emb),int_kxX))
+    #print variance
+    if verbose:
+        print "done", datetime.datetime.now(), datetime.datetime.now()-start
+    # return mean estimate and standard deviation
+    return integral_est, np.sqrt(variance)
+
+
