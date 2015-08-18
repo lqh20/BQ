@@ -77,3 +77,5 @@ A[0,0] =1
 A[1,1] = 1
 
 bq.bayesian_quad_normal_embedding(test_emb,10,500,mu = np.repeat(0,10),Sigma = np.diag(np.repeat(1,10)),A=A)
+
+est, sd, model = bq.bayesian_quad_normal_embedding_ml(test_emb,10,500,mu = np.repeat(0,10),Sigma = np.diag(np.repeat(1,10)),As=A)

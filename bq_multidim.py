@@ -109,7 +109,7 @@ def bayesian_quad_lesbegue(f,n_dim,ranges, sample_size, kernel=None,random_sampl
     if verbose:
         print "done", datetime.datetime.now(), datetime.datetime.now()-start
     # return mean estimate and standard deviation
-    return integral_est, np.sqrt(variance)
+    return integral_est, np.sqrt(variance), model
 
 def bayesian_quad_normal(f,n_dim, sample_size, mu, Sigma, verbose = True):
     """
@@ -199,7 +199,7 @@ def bayesian_quad_normal(f,n_dim, sample_size, mu, Sigma, verbose = True):
     if verbose:
         print "done", datetime.datetime.now(), datetime.datetime.now()-start
     # return mean estimate and standard deviation
-    return integral_est, np.sqrt(variance)
+    return integral_est, np.sqrt(variance), model
 
 
 def bayesian_quad_normal_embedding(f,n_dim, sample_size, mu, Sigma, emb_dim = 2, A=None, verbose = True):
@@ -297,6 +297,107 @@ def bayesian_quad_normal_embedding(f,n_dim, sample_size, mu, Sigma, emb_dim = 2,
     if verbose:
         print "done", datetime.datetime.now(), datetime.datetime.now()-start
     # return mean estimate and standard deviation
-    return integral_est, np.sqrt(variance)
+    return integral_est, np.sqrt(variance), model
+
+
+def bayesian_quad_normal_embedding_ml(f,n_dim, sample_size, mu, Sigma, emb_dim = 2, A=None, verbose = True):
+    """
+    Implements BMC Bayesian Quadrature with embedding for a Gaussian base measure and RBF kernel.
+    
+    Args:
+        f (function): Function to be integrated
+        n_dim (int): dimension
+        sample_size (int): number of samples to use
+        mu (ndarray): mean vector of Gaussian to integrate against
+        Sigma (ndarray): covariance matrix of Gaussian to integrate against
+    
+    Kwargs:
+        verbose (bool): verbosity
+        A (ndarray): embedding to be used, defaults to random normal
+    
+    Returns:
+        integral estimate, standard deviation
+    """    
+    start = datetime.datetime.now()  
+    if verbose:
+        print start
+    if A is None:
+        A = np.random.normal(0,1,n_dim*emb_dim).reshape(emb_dim,n_dim)
+    print A
+    kernel =GPy.kern.Mahalanobis(n_dim,A_matrix=A)
+    
+    mu = np.atleast_1d(mu)
+    Sigma = np.atleast_2d(Sigma)
+    
+    
+    #generate sample points
+    if verbose:
+        print "sampling"
+        x_grid = np.atleast_2d(multivariate_normal.rvs(mean=mu, cov=Sigma, size=sample_size))
+    #calculate function values
+    f_obs = np.array(map(lambda x: f(*x),np.atleast_2d(x_grid)))
+       
+    #fit GP model
+    if verbose:
+        print "done",datetime.datetime.now(), datetime.datetime.now()-start
+        print "fitting model"
+    model = gp_reg.GPRegression(x_grid,f_obs[:,None],kernel,normalizer=False)
+    model["Gaussian*."].constrain_bounded(0,1e-10)
+    model.optimize_restarts(20,verbose=verbose,optimizer="lbfgs",max_f_eval=1000)
+    if verbose:
+        print model
+        print model.kern[:]
+        print datetime.datetime.now(), datetime.datetime.now()-start
+        print "integrals estimate"
+    A = model.kern.A_matrix
+    
+    # calculate determinant
+    #print DInv_vec
+    ATA = np.dot(A.transpose(),A)
+    SigmaInv = LA.inv(Sigma)
+    ATA_SigmaInv = ATA + SigmaInv
+    #print DInv_SigmaInv
+    ATA_SigmaInv_Inv = LA.inv(ATA_SigmaInv)
+    #print DInv_SigmaInv_Inv
+    det_Sigma = LA.det(Sigma)
+    det_ATA_SigmaInv = LA.det(ATA_SigmaInv)
+    #print det_DInv_SigmaInv
+        
+    # set up functions that integrate kernel explicitly
+    def int_k_x(y):
+        y_prime = y-mu
+        ATA_y_prime = np.dot(ATA,y_prime)
+        temp = -0.5*np.einsum("i,i",ATA_y_prime,y_prime)+0.5*np.einsum("i,ij,j",ATA_y_prime,ATA_SigmaInv_Inv,ATA_y_prime)
+        return model.kern["variance"]*det_Sigma**(-0.5)*det_ATA_SigmaInv**(-0.5)*np.exp(temp)
+        
+    int_kxX= np.ravel(np.array(map(int_k_x,x_grid)))
+    #print int_kxX
+    print "Mean integral computed", datetime.datetime.now(), datetime.datetime.now()-start
+    print "Variance integral"
+            
+    def int_k_x_y():
+        return model.kern["variance"]*det_Sigma**(-0.5)*LA.det(SigmaInv+2*ATA)**(-0.5)
+    
+    int_kxx =  int_k_x_y()
+    #print int_kxx
+    #int_kxx_t, err = integrate.nquad(lambda *x: tmp_prod(x),ranges)
+    #print int_kxx,int_kxx_t
+    if verbose:
+        print "initial integrals computed", datetime.datetime.now(), datetime.datetime.now()-start
+        print "calculate estimate"
+    integral_est = np.dot(int_kxX,LA.solve(model.kern.K(x_grid),f_obs))
+    if verbose:
+        print "estimate calculated", datetime.datetime.now(), datetime.datetime.now()-start
+        print "calculate variance"
+    variance = int_kxx-np.dot(int_kxX,LA.solve(model.kern.K(x_grid),int_kxX))
+    #print variance
+    if verbose:
+        print "done", datetime.datetime.now(), datetime.datetime.now()-start
+    # return mean estimate and standard deviation
+    if verbose:
+        print model
+        print model.kern.A_matrix
+        print model.kern.weights()
+    return integral_est, np.sqrt(variance), model
 
 
